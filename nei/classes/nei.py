@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 from typing import Union, Optional, List, Dict, Callable
 import astropy.units as u
 import plasmapy as pl
-import collections
 from scipy import interpolate, optimize
 from .eigenvaluetable import EigenData2
 from .ionization_states import IonizationStates
@@ -793,19 +792,22 @@ class NEI:
         else:
             raise TypeError("Invalid choice for verbose.")
 
-    def in_time_interval(self, time: u.Quantity):
+    @u.quantity_input
+    def in_time_interval(self, time: u.s, buffer: u.s = 1e-9 * u.s):
         """
-        Return `True` if the time is between `time_start` and
-        `time_max`, and `False` otherwise.  If `time` is not a valid
-        time, then raise a `~astropy.units.UnitsError`.
+        Return `True` if the `time` is between `time_start - buffer` and
+        `time_max + buffer` , and `False` otherwise.
+
+        Raises
+        ------
+        TypeError
+            If `time` or `buffer` is not a `~astropy.units.Quantity`
+
+        `~astropy.units.UnitsError`
+            If `time` or `buffer` is not in units of time.
+
         """
-        if not isinstance(time, u.Quantity):
-            raise TypeError
-        if not time.unit.physical_type == 'time':
-            raise u.UnitsError(f"{time} is not a valid time.")
-        return self.time_start <= time <= self.time_max or \
-               np.isclose(time.value, self.time_start.value) or \
-               np.isclose(time.value, self.time_max.value)
+        return self.time_start - buffer <= time <= self.time_max + buffer
 
     @property
     def max_steps(self) -> int:
@@ -849,7 +851,12 @@ class NEI:
                 time_input = self.time_input
                 if len(time_input) != len(T_e):
                     raise ValueError("len(T_e) not equal to len(time_input).")
-                f = interpolate.interp1d(time_input.value, T_e.value)
+                f = interpolate.interp1d(
+                    time_input.value,
+                    T_e.value,
+                    bounds_error=False,
+                    fill_value="extrapolate",
+                )
                 self._electron_temperature = lambda time: f(time.value) * u.K
                 self._T_e_input = T_e
         elif callable(T_e):
@@ -868,8 +875,11 @@ class NEI:
 
     def electron_temperature(self, time: u.Quantity) -> u.Quantity:
         try:
-#            if not self.in_time_interval(time):
-#                raise NEIError("Not in simulation time interval.")
+            if not self.in_time_interval(time):
+                warnings.warn(
+                    f"{time} is not in the simulation time interval:"
+                    f"[{self.time_start}, {self.time_max}]. "
+                    f"May be extrapolating temperature.")
             T_e = self._electron_temperature(time.to(u.s))
             if np.isnan(T_e) or np.isinf(T_e) or T_e < 0 * u.K:
                 raise NEIError(f"T_e = {T_e} at time = {time}.")
@@ -904,7 +914,12 @@ class NEI:
                 time_input = self.time_input
                 if len(time_input) != len(n):
                     raise ValueError("len(n) is not equal to len(time_input).")
-                f = interpolate.interp1d(time_input.value, n.value)
+                f = interpolate.interp1d(
+                    time_input.value,
+                    n.value,
+                    bounds_error=False,
+                    fill_value="extrapolate",
+                )
                 self._hydrogen_number_density = \
                     lambda time: f(time.value) * u.cm ** -3
                 self._n_input = n
@@ -1366,7 +1381,7 @@ class Visualize(NEI):
              The repective integer charge of the atomic particle (i.e. 0 or [0,1])
 
         x_axis: ~astropy.units.Quantity: array-like ,
-                The xaxis to plot the ionic fraction evolution over. 
+                The xaxis to plot the ionic fraction evolution over.
                 Can only be distance or time.
 
         """
@@ -1374,7 +1389,7 @@ class Visualize(NEI):
         if not isinstance(self.element, str):
             raise TypeError('The element input must be a string')
 
-            
+
         #Check to see if x_axis units are of time or length
         if isinstance(x_axis, u.Quantity):
             try:
@@ -1385,8 +1400,8 @@ class Visualize(NEI):
                 xlabel = 'Distance'
         else:
             raise TypeError('Invalid x-axis units. Must be units of length or time.')
-            
-            
+
+
         if ion == 'all':
             charge_states = pl.atomic.atomic_number(self.element) + 1
         else:
@@ -1456,7 +1471,7 @@ class Visualize(NEI):
                 color_idx ^= 1
 
                 ax.bar(charge_states, self.results.ionic_fractions[self.element][idx,:], alpha=alpha, \
-                        width=width, color=colors[color_idx], 
+                        width=width, color=colors[color_idx],
                         label='Time:{time:.{number}f}'.format(time=self.index_to_time(idx), number=1))
                 alpha -= 0.2
             ax.set_xticks(charge_states-width/2.0)
